@@ -28,6 +28,16 @@ export const NODE_W = 232;
 export const NODE_H = 118;
 export const PORT_Y = NODE_H / 2; // true vertical center
 
+// Asset types — kinds of creative deliverables a node might require
+export const ASSET_TYPES = {
+  video:  { label: "Video",  color: "#ff5a00", short: "vid" },
+  copy:   { label: "Copy",   color: "#60a5fa", short: "copy" },
+  design: { label: "Design", color: "#a78bfa", short: "dsn" },
+  page:   { label: "Page",   color: "#34d399", short: "pg" },
+  audio:  { label: "Audio",  color: "#fbbf24", short: "aud" },
+  other:  { label: "Other",  color: "#71717a", short: "oth" },
+};
+
 export const NODE_CATEGORIES = {
   traffic: {
     label: "Traffic",
@@ -387,10 +397,34 @@ function starterScenario() {
     overrides: {},
   });
   const nodes = [
-    n("t1", "traffic",    "meta_ads",  80,  120, { campaignCode: "LAUNCH 1.0", adSpend: 2000, cpm: 14, ctr: 1.8 }),
-    n("c1", "conversion", "optin",     380, 120, { campaignCode: "LP-A", conversionRate: 38 }),
-    n("nu1","nurture",    "email_seq", 680, 60,  { openRate: 48, engagementRate: 22 }),
-    n("nu2","nurture",    "sales_call",680, 220, { showUpRate: 55, closeRate: 22 }),
+    n("t1", "traffic",    "meta_ads",  80,  120, {
+      campaignCode: "LAUNCH 1.0", adSpend: 2000, cpm: 14, ctr: 1.8,
+      assets: [
+        { id: "a1", kind: "video",  name: "Event highlight reel",     description: "45s vertical cut from Investor Connect, framed around authority + energy" },
+        { id: "a2", kind: "video",  name: "Testimonial remix",        description: "3 client testimonials, split into 3 individual 30s ads" },
+        { id: "a3", kind: "copy",   name: "Ad copy — 3 variants",     description: "Hook-driven, outcome-driven, curiosity-driven" },
+        { id: "a4", kind: "design", name: "Static carousel",          description: "5 slides on the Método 4R's framework" },
+      ],
+    }),
+    n("c1", "conversion", "optin",     380, 120, {
+      campaignCode: "LP-A", conversionRate: 38,
+      assets: [
+        { id: "a5", kind: "page",   name: "Opt-in landing page",      description: "Hero + benefit bullets + social proof block + form" },
+        { id: "a6", kind: "copy",   name: "Headline + subhead copy",  description: "Test 2 versions, rotate weekly" },
+      ],
+    }),
+    n("nu1","nurture",    "email_seq", 680, 60,  {
+      openRate: 48, engagementRate: 22,
+      assets: [
+        { id: "a7", kind: "copy",   name: "5-email welcome sequence", description: "Day 0, 1, 2, 4, 7 — each ends with a soft CTA to book the call" },
+      ],
+    }),
+    n("nu2","nurture",    "sales_call",680, 220, {
+      showUpRate: 55, closeRate: 22,
+      assets: [
+        { id: "a8", kind: "copy",   name: "Sales call script",        description: "Discovery questions, pain diagnosis, offer presentation, objection handling" },
+      ],
+    }),
     n("o1", "offer",      "offer",     980, 220, {
       campaignCode: "ACCELERATOR", price: 2500, conversionRate: 100,
       useBundle: true,
@@ -1392,6 +1426,9 @@ export function WhiteboardNode({ node, cat, typeDef, m, selected, onMouseDown, o
         </button>
       </div>
 
+      {/* Asset pill */}
+      <WhiteboardAssetPill node={node} />
+
       {/* Ports */}
       <div
         data-port-in="1"
@@ -1778,12 +1815,14 @@ export function NodeCard({ node, cat, typeDef, m, selected, onMouseDown, onSelec
         </button>
       </div>
       {/* Body */}
-      <div className="px-3 py-2">
+      <div className="px-3 py-2 relative">
         <div className="font-mono-data text-[10px] text-zinc-500 uppercase tracking-wider">{headline.label}</div>
         <div className="font-mono-data text-base text-white tabular-nums mt-0.5 leading-tight">{headline.value}</div>
         {headline.sub && (
           <div className="font-mono-data text-[10px] text-zinc-500 mt-0.5 truncate">{headline.sub}</div>
         )}
+        {/* Asset dots (bottom-right) */}
+        <AssetDots node={node} />
       </div>
       {/* Ports — positioned at exact vertical center of fixed-height card */}
       <div
@@ -1993,6 +2032,91 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
 
 
 // ------------- Node headline helper -----------------------------------------
+
+// ------------- Asset summary helper -----------------------------------------
+
+// Returns an array like [{ kind, label, color, count }] sorted by count desc
+export function getAssetSummary(node) {
+  const assets = (node.data && node.data.assets) || [];
+  if (assets.length === 0) return [];
+  const counts = {};
+  for (const a of assets) {
+    const kind = a.kind || "other";
+    counts[kind] = (counts[kind] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([kind, count]) => ({
+      kind,
+      count,
+      label: (ASSET_TYPES[kind] || ASSET_TYPES.other).label,
+      color: (ASSET_TYPES[kind] || ASSET_TYPES.other).color,
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// ------------- Asset badges (visual summaries on nodes) --------------------
+
+// Lab view — small colored dots in the node body, one per asset type present
+export function AssetDots({ node }) {
+  const summary = getAssetSummary(node);
+  if (summary.length === 0) return null;
+  const total = summary.reduce((s, r) => s + r.count, 0);
+  const tooltip = summary.map(s => `${s.count} ${s.label.toLowerCase()}`).join(" · ");
+  return (
+    <div
+      className="absolute bottom-1.5 right-2 flex items-center gap-0.5"
+      title={tooltip}
+    >
+      {summary.slice(0, 4).map(s => (
+        <div
+          key={s.kind}
+          className="rounded-full"
+          style={{
+            width: 6,
+            height: 6,
+            background: s.color,
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.4)",
+          }}
+        />
+      ))}
+      <div className="font-mono-data text-[9px] text-zinc-500 ml-1 tabular-nums">{total}</div>
+    </div>
+  );
+}
+
+// Whiteboard view — clean pill below the node showing "N videos · M copy"
+export function WhiteboardAssetPill({ node }) {
+  const summary = getAssetSummary(node);
+  if (summary.length === 0) return null;
+  return (
+    <div
+      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full"
+      style={{
+        bottom: -14,
+        background: "#18181b",
+        border: "1px solid #27272a",
+        padding: "3px 10px",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {summary.slice(0, 3).map((s, i) => (
+        <div key={s.kind} className="flex items-center gap-1">
+          {i > 0 && <div className="w-px h-2.5" style={{ background: "#3f3f46" }}/>}
+          <div
+            className="rounded-full"
+            style={{ width: 5, height: 5, background: s.color }}
+          />
+          <span
+            className="font-mono-data text-[9px] uppercase tracking-wider tabular-nums"
+            style={{ color: "#d4d4d8" }}
+          >
+            {s.count} {s.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function getNodeHeadline(node, m) {
   if (node.category === "traffic") {
@@ -2389,6 +2513,12 @@ function NodeEditor({ node, metrics, onUpdateField, onToggleOverride, onRemoveNo
           />
         )}
 
+        {/* Assets editor — available for every node */}
+        <AssetsEditor
+          node={node}
+          onUpdateField={onUpdateField}
+        />
+
         {/* Live downstream info */}
         <div className="mt-3 pt-3 border-t border-zinc-800/70">
           <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1.5">Live flow</div>
@@ -2405,6 +2535,109 @@ function NodeEditor({ node, metrics, onUpdateField, onToggleOverride, onRemoveNo
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------- Assets editor (any node) -------------------------------------
+
+function AssetsEditor({ node, onUpdateField }) {
+  const assets = (node.data.assets || []);
+
+  const updateAssets = (next) => onUpdateField(node.id, "assets", next);
+
+  const addAsset = () => {
+    const id = "a_" + Math.random().toString(36).slice(2, 7);
+    updateAssets([...assets, { id, kind: "video", name: "", description: "" }]);
+  };
+
+  const updateAsset = (id, patch) => {
+    updateAssets(assets.map(a => a.id === id ? { ...a, ...patch } : a));
+  };
+
+  const removeAsset = (id) => {
+    updateAssets(assets.filter(a => a.id !== id));
+  };
+
+  return (
+    <div className="mt-4 pt-3 border-t" style={{ borderColor: "var(--border-1)" }}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Package size={11} style={{ color: "var(--brand-bright)" }}/>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-400">
+            Assets to produce {assets.length > 0 && <span className="text-zinc-600">· {assets.length}</span>}
+          </div>
+        </div>
+        <button
+          onClick={addAsset}
+          className="flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded transition"
+          style={{ color: "var(--brand-bright)", background: "rgba(255,90,0,0.1)", border: "1px solid rgba(255,90,0,0.25)" }}
+        >
+          <Plus size={10}/> Add
+        </button>
+      </div>
+
+      {assets.length === 0 && (
+        <div className="text-[11px] text-zinc-600 italic py-2">
+          No creatives defined. Add the videos, copy and design you need to produce for this step.
+        </div>
+      )}
+
+      {assets.length > 0 && (
+        <div className="space-y-2">
+          {assets.map((a) => {
+            const t = ASSET_TYPES[a.kind] || ASSET_TYPES.other;
+            return (
+              <div key={a.id} className="rounded border p-2 group/row"
+                   style={{ borderColor: "var(--border-2)", background: "rgba(0,0,0,0.35)" }}>
+                <div className="flex items-start gap-2">
+                  {/* Type selector */}
+                  <select
+                    value={a.kind}
+                    onChange={(e) => updateAsset(a.id, { kind: e.target.value })}
+                    className="bg-black border rounded px-1.5 py-1 text-[10px] font-mono-data uppercase tracking-wider focus:outline-none"
+                    style={{
+                      borderColor: t.color + "55",
+                      color: t.color,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {Object.entries(ASSET_TYPES).map(([k, v]) => (
+                      <option key={k} value={k} style={{ background: "#000", color: "#fff" }}>{v.label}</option>
+                    ))}
+                  </select>
+
+                  <input
+                    type="text"
+                    value={a.name}
+                    onChange={(e) => updateAsset(a.id, { name: e.target.value })}
+                    placeholder="e.g. Event highlight video"
+                    className="flex-1 min-w-0 bg-black border rounded px-2 py-1 text-[12px] text-zinc-100 focus:outline-none focus:border-[color:var(--brand)] placeholder:text-zinc-700"
+                    style={{ borderColor: "var(--border-2)" }}
+                  />
+
+                  <button
+                    onClick={() => removeAsset(a.id)}
+                    className="p-1 text-zinc-700 hover:text-red-400 transition opacity-0 group-hover/row:opacity-100"
+                    title="Remove"
+                  >
+                    <X size={11}/>
+                  </button>
+                </div>
+
+                <textarea
+                  value={a.description}
+                  onChange={(e) => updateAsset(a.id, { description: e.target.value })}
+                  placeholder="Short description — angle, length, remarks…"
+                  rows={2}
+                  className="mt-1.5 w-full bg-black border rounded px-2 py-1 text-[11px] text-zinc-300 focus:outline-none focus:border-[color:var(--brand)] placeholder:text-zinc-700 resize-none"
+                  style={{ borderColor: "var(--border-2)" }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
