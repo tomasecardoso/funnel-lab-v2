@@ -6,7 +6,8 @@ import { GitBranch } from 'lucide-react';
 export default function Login() {
   const nav = useNavigate();
   const [email, setEmail] = useState('');
-  const [status, setStatus] = useState('idle'); // idle | sending | sent | error
+  const [password, setPassword] = useState('');
+  const [status, setStatus] = useState('idle'); // idle | signing_in | error
   const [err, setErr] = useState('');
 
   // If already signed in, bounce to home.
@@ -18,19 +19,17 @@ export default function Login() {
 
   const submit = async (e) => {
     e.preventDefault();
-    setStatus('sending');
+    setStatus('signing_in');
     setErr('');
-    const { error } = await supabase.auth.signInWithOtp({
+    const { error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
+      password,
     });
     if (error) {
       setStatus('error');
       setErr(error.message);
     } else {
-      setStatus('sent');
+      nav('/', { replace: true });
     }
   };
 
@@ -62,43 +61,45 @@ export default function Login() {
           </div>
         </div>
 
-        {status !== 'sent' ? (
-          <form onSubmit={submit} className="space-y-3">
-            <label className="block">
-              <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1.5">Email</div>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@digitalplane.pt"
-                className="w-full bg-black border border-zinc-800 rounded-md px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#ff5a00]"
-              />
-            </label>
-            <button
-              type="submit"
-              disabled={status === 'sending' || !email.trim()}
-              className="w-full py-2 rounded-md text-sm font-medium transition disabled:opacity-50"
-              style={{
-                background: "#ff5a00",
-                color: "#000",
-              }}
-            >
-              {status === 'sending' ? 'Sending…' : 'Send magic link'}
-            </button>
-            {err && (
-              <div className="text-xs text-red-400 mt-2">{err}</div>
-            )}
-            <div className="text-[11px] text-zinc-600 pt-2">
-              You'll get a one-click sign-in link by email. No password needed.
-            </div>
-          </form>
-        ) : (
-          <div className="space-y-2">
-            <div className="text-sm text-white">Check your inbox.</div>
-            <div className="text-xs text-zinc-500">We sent a magic link to <span className="text-zinc-300">{email}</span>. Click it to sign in.</div>
-          </div>
-        )}
+        <form onSubmit={submit} className="space-y-3">
+          <label className="block">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1.5">Email</div>
+            <input
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@digitalplane.pt"
+              className="w-full bg-black border border-zinc-800 rounded-md px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#ff5a00]"
+            />
+          </label>
+          <label className="block">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500 mb-1.5">Password</div>
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-black border border-zinc-800 rounded-md px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-[#ff5a00]"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={status === 'signing_in' || !email.trim() || !password}
+            className="w-full py-2 rounded-md text-sm font-medium transition disabled:opacity-50"
+            style={{
+              background: "#ff5a00",
+              color: "#000",
+            }}
+          >
+            {status === 'signing_in' ? 'Signing in…' : 'Sign in'}
+          </button>
+          {err && (
+            <div className="text-xs text-red-400 mt-2">{err}</div>
+          )}
+        </form>
       </div>
     </div>
   );
