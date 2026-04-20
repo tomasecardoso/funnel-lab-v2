@@ -510,8 +510,9 @@ export default function FunnelLab() {
   const [nodes, setNodes] = useState(() => starterScenario().nodes);
   const [edges, setEdges] = useState(() => starterScenario().edges);
   const [textBlocks, setTextBlocks] = useState(() => starterScenario().textBlocks || []);
-  const [selectedId, setSelectedId] = useState(null);
-  const [selectedTextId, setSelectedTextId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());     // multi-select: node IDs
+  const [selectedTextIds, setSelectedTextIds] = useState(() => new Set()); // multi-select: text IDs
+  const [marquee, setMarquee] = useState(null); // { startX, startY, x, y }
   const [draggingText, setDraggingText] = useState(null);
   const [draggingNode, setDraggingNode] = useState(null); // { id, offsetX, offsetY }
   const [connecting, setConnecting] = useState(null); // { fromId, x, y }
@@ -528,8 +529,35 @@ export default function FunnelLab() {
   const [viewMode, setViewMode] = useState("lab"); // "lab" | "whiteboard"
   const [expandedNodeId, setExpandedNodeId] = useState(null);
   const [draftPrompt, setDraftPrompt] = useState(null); // { draft } — offered restore banner
+  const [autoEditBlockId, setAutoEditBlockId] = useState(null);
 
   const canvasRef = useRef(null);
+  const clipboardRef = useRef(null); // { nodes, edges, textBlocks }
+
+  // Derived single-selection (maintains backward compat with right-panel editor)
+  const selectedId = selectedIds.size === 1 ? [...selectedIds][0] : null;
+  const selectedTextId = selectedTextIds.size === 1 ? [...selectedTextIds][0] : null;
+
+  // Selection helpers — all downstream code uses these instead of setSelectedId directly
+  const selectNodeOnly = (id) => { setSelectedIds(new Set([id])); setSelectedTextIds(new Set()); };
+  const selectTextOnly = (id) => { setSelectedTextIds(new Set([id])); setSelectedIds(new Set()); };
+  const clearSelection = () => { setSelectedIds(new Set()); setSelectedTextIds(new Set()); };
+  const toggleNodeSelection = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setSelectedTextIds(new Set());
+  };
+  const toggleTextSelection = (id) => {
+    setSelectedTextIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    setSelectedIds(new Set());
+  };
 
   // ---- Auto-save ----------------------------------------------------------
   const autoSave = useAutoSave({
@@ -599,8 +627,7 @@ export default function FunnelLab() {
     setEdges(sc.edges);
     setTextBlocks(sc.textBlocks || []);
     setActiveScenarioId(id);
-    setSelectedId(null);
-    setSelectedTextId(null);
+    clearSelection();
   };
 
   const deleteScenarioFn = async (id) => {
@@ -657,8 +684,7 @@ export default function FunnelLab() {
     setEdges(d.edges || []);
     setTextBlocks(d.textBlocks || []);
     setActiveScenarioId(d.activeScenarioId || null);
-    setSelectedId(null);
-    setSelectedTextId(null);
+    clearSelection();
     setDraftPrompt(null);
   };
 
@@ -696,7 +722,7 @@ export default function FunnelLab() {
   const removeNode = (id) => {
     setNodes(prev => prev.filter(n => n.id !== id));
     setEdges(prev => prev.filter(e => e.from !== id && e.to !== id));
-    if (selectedId === id) setSelectedId(null);
+    setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
   };
 
   const updateNodeData = (id, key, value) => {
@@ -746,9 +772,9 @@ export default function FunnelLab() {
       h3: "Section label",
       p:  "Write your note here. Select text to format it.",
     }[kind] || "Text";
-    setTextBlocks(prev => [...prev, { id, kind, x, y, w: 360, html: defaultHtml }]);
-    setSelectedTextId(id);
-    setSelectedId(null);
+    setTextBlocks(prev => [...prev, { id, kind, x, y, w: 360, html: defaultHtml, align: "left" }]);
+    selectTextOnly(id);
+    setAutoEditBlockId(id);
   };
 
   const updateTextBlock = (id, patch) => {
@@ -757,17 +783,111 @@ export default function FunnelLab() {
 
   const removeTextBlock = (id) => {
     setTextBlocks(prev => prev.filter(b => b.id !== id));
-    if (selectedTextId === id) setSelectedTextId(null);
+    setSelectedTextIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+  };
+
+  // ---- Clipboard / Copy-Paste ---------------------------------------------
+
+  // Snapshot current selection to clipboard
+  const copySelection = () => {
+    const copiedNodes = nodes.filter(n => selectedIds.has(n.id));
+    const copiedTextBlocks = textBlocks.filter(b => selectedTextIds.has(b.id));
+    // Only include edges where BOTH endpoints are in selection
+    const copiedEdges = edges.filter(e => selectedIds.has(e.from) && selectedIds.has(e.to));
+    if (copiedNodes.length === 0 && copiedTextBlocks.length === 0) return false;
+    clipboardRef.current = {
+      nodes: JSON.parse(JSON.stringify(copiedNodes)),
+      edges: JSON.parse(JSON.stringify(copiedEdges)),
+      textBlocks: JSON.parse(JSON.stringify(copiedTextBlocks)),
+    };
+    return true;
+  };
+
+  const cutSelection = () => {
+    const had = copySelection();
+    if (!had) return;
+    // Remove selected nodes (+ their edges) and text blocks
+    const idsToRemove = new Set(selectedIds);
+    setNodes(prev => prev.filter(n => !idsToRemove.has(n.id)));
+    setEdges(prev => prev.filter(e => !idsToRemove.has(e.from) && !idsToRemove.has(e.to)));
+    const textIdsToRemove = new Set(selectedTextIds);
+    setTextBlocks(prev => prev.filter(b => !textIdsToRemove.has(b.id)));
+    clearSelection();
+  };
+
+  // Paste at given canvas position (defaults to mousePos). Assigns new IDs,
+  // rewires edges, and leaves pasted items as the new selection.
+  const pasteClipboard = (targetPos) => {
+    const clip = clipboardRef.current;
+    if (!clip || (clip.nodes.length === 0 && clip.textBlocks.length === 0)) return;
+    const target = targetPos || mousePos;
+
+    // Compute the anchor (top-left of the bounding box of copied items)
+    let minX = Infinity, minY = Infinity;
+    [...clip.nodes, ...clip.textBlocks].forEach(it => {
+      if (it.x < minX) minX = it.x;
+      if (it.y < minY) minY = it.y;
+    });
+    if (!isFinite(minX)) { minX = 0; minY = 0; }
+
+    const dx = target.x - minX;
+    const dy = target.y - minY;
+
+    // Assign new IDs
+    const idMap = {};
+    const newNodes = clip.nodes.map(n => {
+      const newId = "n_" + Math.random().toString(36).slice(2, 8);
+      idMap[n.id] = newId;
+      return { ...n, id: newId, x: n.x + dx, y: n.y + dy };
+    });
+    const newEdges = clip.edges.map(e => ({
+      id: "e_" + Math.random().toString(36).slice(2, 8),
+      from: idMap[e.from],
+      to: idMap[e.to],
+    })).filter(e => e.from && e.to);
+    const newTextBlocks = clip.textBlocks.map(b => ({
+      ...b,
+      id: "tx_" + Math.random().toString(36).slice(2, 8),
+      x: b.x + dx,
+      y: b.y + dy,
+    }));
+
+    setNodes(prev => [...prev, ...newNodes]);
+    setEdges(prev => [...prev, ...newEdges]);
+    setTextBlocks(prev => [...prev, ...newTextBlocks]);
+    // Select the pasted items
+    setSelectedIds(new Set(newNodes.map(n => n.id)));
+    setSelectedTextIds(new Set(newTextBlocks.map(b => b.id)));
+  };
+
+  // Duplicate in place with a small offset
+  const duplicateSelection = () => {
+    const had = copySelection();
+    if (!had) return;
+    // Paste offset by +24 from clipboard anchor
+    const clip = clipboardRef.current;
+    let minX = Infinity, minY = Infinity;
+    [...clip.nodes, ...clip.textBlocks].forEach(it => {
+      if (it.x < minX) minX = it.x;
+      if (it.y < minY) minY = it.y;
+    });
+    if (!isFinite(minX)) return;
+    pasteClipboard({ x: minX + 24, y: minY + 24 });
   };
 
   // ---- Mouse handling ------------------------------------------------------
   const onCanvasMouseDown = (e) => {
     if (e.target === canvasRef.current || e.target.dataset?.bg === "1") {
-      setSelectedId(null);
-      setSelectedTextId(null);
+      clearSelection();
       setExpandedNodeId(null);
-      // Plain left-click on background = pan. No modifier needed.
-      if (e.button === 0 || e.button === 1 || e.button === 2) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const canvasX = (e.clientX - rect.left - panOffset.x) / zoom;
+      const canvasY = (e.clientY - rect.top - panOffset.y) / zoom;
+      if (e.shiftKey) {
+        // Shift+click on empty canvas = start marquee selection
+        setMarquee({ startX: canvasX, startY: canvasY, x: canvasX, y: canvasY });
+      } else if (e.button === 0 || e.button === 1 || e.button === 2) {
+        // Plain left-click on background = pan
         setPanning({ startX: e.clientX, startY: e.clientY, origX: panOffset.x, origY: panOffset.y });
       }
     }
@@ -787,22 +907,70 @@ export default function FunnelLab() {
       });
     }
     if (draggingNode) {
-      setNodes(prev => prev.map(n =>
-        n.id === draggingNode.id
-          ? { ...n, x: x - draggingNode.offsetX, y: y - draggingNode.offsetY }
-          : n
-      ));
+      const primaryNode = nodes.find(n => n.id === draggingNode.id);
+      if (!primaryNode) return;
+      const newX = x - draggingNode.offsetX;
+      const newY = y - draggingNode.offsetY;
+      const dx = newX - primaryNode.x;
+      const dy = newY - primaryNode.y;
+      if (selectedIds.size > 1 && selectedIds.has(draggingNode.id)) {
+        // Group drag
+        setNodes(prev => prev.map(n =>
+          selectedIds.has(n.id) ? { ...n, x: n.x + dx, y: n.y + dy } : n
+        ));
+      } else {
+        setNodes(prev => prev.map(n =>
+          n.id === draggingNode.id ? { ...n, x: newX, y: newY } : n
+        ));
+      }
     }
     if (draggingText) {
-      setTextBlocks(prev => prev.map(b =>
-        b.id === draggingText.id
-          ? { ...b, x: x - draggingText.offsetX, y: y - draggingText.offsetY }
-          : b
-      ));
+      const primaryText = textBlocks.find(b => b.id === draggingText.id);
+      if (!primaryText) return;
+      const newX = x - draggingText.offsetX;
+      const newY = y - draggingText.offsetY;
+      const dx = newX - primaryText.x;
+      const dy = newY - primaryText.y;
+      if (selectedTextIds.size > 1 && selectedTextIds.has(draggingText.id)) {
+        setTextBlocks(prev => prev.map(b =>
+          selectedTextIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b
+        ));
+      } else {
+        setTextBlocks(prev => prev.map(b =>
+          b.id === draggingText.id ? { ...b, x: newX, y: newY } : b
+        ));
+      }
+    }
+    if (marquee) {
+      setMarquee(m => m ? { ...m, x, y } : m);
     }
   };
 
   const onCanvasMouseUp = (e) => {
+    // Finalize marquee selection
+    if (marquee) {
+      const x1 = Math.min(marquee.startX, marquee.x);
+      const x2 = Math.max(marquee.startX, marquee.x);
+      const y1 = Math.min(marquee.startY, marquee.y);
+      const y2 = Math.max(marquee.startY, marquee.y);
+      const hitNodes = new Set();
+      nodes.forEach(n => {
+        const cx = n.x + NODE_W / 2;
+        const cy = n.y + NODE_H / 2;
+        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) hitNodes.add(n.id);
+      });
+      const hitTexts = new Set();
+      textBlocks.forEach(b => {
+        const cx = b.x + (b.w || 360) / 2;
+        const cy = b.y + 20;
+        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) hitTexts.add(b.id);
+      });
+      if (hitNodes.size > 0 || hitTexts.size > 0) {
+        setSelectedIds(hitNodes);
+        setSelectedTextIds(hitTexts);
+      }
+      setMarquee(null);
+    }
     setDraggingNode(null);
     setDraggingText(null);
     setPanning(null);
@@ -826,22 +994,75 @@ export default function FunnelLab() {
     }
   };
 
-  // Keyboard delete + view toggle + escape
+  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
       if (isEditableEl(document.activeElement)) return;
+      const mod = e.metaKey || e.ctrlKey;
+
+      // Delete
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedId) removeNode(selectedId);
-        else if (selectedTextId) removeTextBlock(selectedTextId);
-      } else if (e.key === "v" || e.key === "V") {
-        setViewMode(m => m === "lab" ? "whiteboard" : "lab");
-      } else if (e.key === "Escape") {
-        setExpandedNodeId(null);
+        // Delete all selected nodes + text blocks
+        if (selectedIds.size > 0) {
+          const idsToRemove = new Set(selectedIds);
+          setNodes(prev => prev.filter(n => !idsToRemove.has(n.id)));
+          setEdges(prev => prev.filter(edge => !idsToRemove.has(edge.from) && !idsToRemove.has(edge.to)));
+          setSelectedIds(new Set());
+        }
+        if (selectedTextIds.size > 0) {
+          const textIds = new Set(selectedTextIds);
+          setTextBlocks(prev => prev.filter(b => !textIds.has(b.id)));
+          setSelectedTextIds(new Set());
+        }
+        return;
+      }
+
+      // Copy / Cut / Paste / Duplicate
+      if (mod && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        copySelection();
+        return;
+      }
+      if (mod && (e.key === "x" || e.key === "X")) {
+        e.preventDefault();
+        cutSelection();
+        return;
+      }
+      if (mod && (e.key === "v" || e.key === "V")) {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      // Select all
+      if (mod && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        setSelectedIds(new Set(nodes.map(n => n.id)));
+        setSelectedTextIds(new Set(textBlocks.map(b => b.id)));
+        return;
+      }
+
+      // Non-modifier shortcuts
+      if (!mod) {
+        if (e.key === "v" || e.key === "V") {
+          setViewMode(m => m === "lab" ? "whiteboard" : "lab");
+        } else if (e.key === "t" || e.key === "T") {
+          // Add a text block at cursor position, H2 by default, enter edit mode
+          addTextBlock("h2", mousePos);
+        } else if (e.key === "Escape") {
+          setExpandedNodeId(null);
+          clearSelection();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, selectedTextId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, selectedTextIds, nodes, edges, textBlocks, mousePos]);
 
   // Palette drag
   const [paletteDrag, setPaletteDrag] = useState(null); // { kind: "node" | "text", category, type } or { kind: "text", textKind }
@@ -1231,6 +1452,25 @@ export default function FunnelLab() {
             className="absolute inset-0 origin-top-left"
             style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})` }}
           >
+            {/* Marquee rectangle */}
+            {marquee && (() => {
+              const x1 = Math.min(marquee.startX, marquee.x);
+              const x2 = Math.max(marquee.startX, marquee.x);
+              const y1 = Math.min(marquee.startY, marquee.y);
+              const y2 = Math.max(marquee.startY, marquee.y);
+              return (
+                <div
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: x1, top: y1, width: x2 - x1, height: y2 - y1,
+                    border: "1px dashed rgba(255,90,0,0.6)",
+                    background: "rgba(255,90,0,0.06)",
+                    zIndex: 100,
+                  }}
+                />
+              );
+            })()}
+
             {/* Edges layer */}
             <EdgesLayer
               nodes={nodes}
@@ -1249,7 +1489,9 @@ export default function FunnelLab() {
               <TextBlockEl
                 key={block.id}
                 block={block}
-                selected={selectedTextId === block.id}
+                selected={selectedTextIds.has(block.id)}
+                autoEdit={autoEditBlockId === block.id}
+                onAutoEditConsumed={() => setAutoEditBlockId(null)}
                 onMouseDown={(e) => {
                   if (isEditableEl(e.target)) return; // don't start drag when clicking into editable area
                   e.stopPropagation();
@@ -1257,10 +1499,13 @@ export default function FunnelLab() {
                   const x = (e.clientX - rect.left - panOffset.x) / zoom;
                   const y = (e.clientY - rect.top - panOffset.y) / zoom;
                   setDraggingText({ id: block.id, offsetX: x - block.x, offsetY: y - block.y });
-                  setSelectedTextId(block.id);
-                  setSelectedId(null);
+                  if (e.shiftKey) toggleTextSelection(block.id);
+                  else if (!selectedTextIds.has(block.id)) selectTextOnly(block.id);
                 }}
-                onSelect={() => { setSelectedTextId(block.id); setSelectedId(null); }}
+                onSelect={(e) => {
+                  if (e && e.shiftKey) toggleTextSelection(block.id);
+                  else selectTextOnly(block.id);
+                }}
                 onChange={(patch) => updateTextBlock(block.id, patch)}
                 onRemove={() => removeTextBlock(block.id)}
               />
@@ -1271,7 +1516,7 @@ export default function FunnelLab() {
               const cat = NODE_CATEGORIES[node.category];
               const typeDef = cat.types[node.type];
               const m = metrics[node.id] || {};
-              const selected = selectedId === node.id;
+              const selected = selectedIds.has(node.id);
               const commonProps = {
                 key: node.id,
                 node, cat, typeDef, m, selected,
@@ -1285,10 +1530,17 @@ export default function FunnelLab() {
                   const x = (e.clientX - rect.left - panOffset.x) / zoom;
                   const y = (e.clientY - rect.top - panOffset.y) / zoom;
                   setDraggingNode({ id: node.id, offsetX: x - node.x, offsetY: y - node.y });
-                  setSelectedId(node.id);
-                  setSelectedTextId(null);
+                  // Selection logic:
+                  //  - shift+click: toggle in/out
+                  //  - if already selected: keep full selection (group drag)
+                  //  - otherwise: replace selection with just this node
+                  if (e.shiftKey) toggleNodeSelection(node.id);
+                  else if (!selectedIds.has(node.id)) selectNodeOnly(node.id);
                 },
-                onSelect: () => { setSelectedId(node.id); setSelectedTextId(null); },
+                onSelect: (e) => {
+                  if (e && e.shiftKey) toggleNodeSelection(node.id);
+                  else selectNodeOnly(node.id);
+                },
                 onStartConnect: (e) => {
                   e.stopPropagation();
                   const rect = canvasRef.current.getBoundingClientRect();
@@ -2122,11 +2374,20 @@ export function NodeCard({ node, cat, typeDef, m, selected, expanded, onToggleEx
 // Returns the primary metric to show on the node body
 // ------------- TextBlock element (markdown-style canvas note) ---------------
 
-export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, onRemove }) {
+export function TextBlockEl({ block, selected, autoEdit, onAutoEditConsumed, onMouseDown, onSelect, onChange, onRemove }) {
   const editorRef = useRef(null);
   const [toolbar, setToolbar] = useState(null); // { x, y, kind } relative to block
   const [activeFormats, setActiveFormats] = useState({ b: false, i: false, u: false });
   const [editing, setEditing] = useState(false);
+
+  // If parent asked us to enter edit mode on mount (e.g. T-key fresh text), honor it
+  useEffect(() => {
+    if (autoEdit) {
+      setEditing(true);
+      onAutoEditConsumed && onAutoEditConsumed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoEdit]);
 
   // Sync HTML in on mount, when content changes externally, or when kind changes (remount)
   useEffect(() => {
@@ -2280,6 +2541,25 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
             </button>
           ))}
           <div className="w-px h-4 self-center" style={{ background: "var(--border-2)" }}/>
+          {[
+            { a: "left",   glyph: "⟸", title: "Align left" },
+            { a: "center", glyph: "≡",  title: "Align center" },
+            { a: "right",  glyph: "⟹", title: "Align right" },
+          ].map(o => {
+            const active = (block.align || "left") === o.a;
+            return (
+              <button
+                key={o.a}
+                onClick={() => onChange({ align: o.a })}
+                className={`px-2 py-1 transition ${active ? "text-[color:var(--brand)]" : "text-zinc-500 hover:text-zinc-300"}`}
+                title={o.title}
+                style={active ? { background: "rgba(255,90,0,0.1)" } : {}}
+              >
+                <span style={{ fontSize: 12 }}>{o.glyph}</span>
+              </button>
+            );
+          })}
+          <div className="w-px h-4 self-center" style={{ background: "var(--border-2)" }}/>
           <button
             onClick={() => setEditing(e => !e)}
             className={`px-2 py-1 uppercase tracking-wider transition ${editing ? "text-[color:var(--brand)]" : "text-zinc-500 hover:text-zinc-300"}`}
@@ -2339,7 +2619,7 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
         </div>
       )}
 
-      <Tag style={{ outline: "none" }}>
+      <Tag style={{ outline: "none", textAlign: block.align || "left" }}>
         <span
           key={block.kind}
           ref={editorRef}
