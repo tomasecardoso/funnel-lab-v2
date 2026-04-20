@@ -1502,10 +1502,7 @@ export default function FunnelLab() {
                   if (e.shiftKey) toggleTextSelection(block.id);
                   else if (!selectedTextIds.has(block.id)) selectTextOnly(block.id);
                 }}
-                onSelect={(e) => {
-                  if (e && e.shiftKey) toggleTextSelection(block.id);
-                  else selectTextOnly(block.id);
-                }}
+                onSelect={() => {}}
                 onChange={(patch) => updateTextBlock(block.id, patch)}
                 onRemove={() => removeTextBlock(block.id)}
               />
@@ -1537,10 +1534,8 @@ export default function FunnelLab() {
                   if (e.shiftKey) toggleNodeSelection(node.id);
                   else if (!selectedIds.has(node.id)) selectNodeOnly(node.id);
                 },
-                onSelect: (e) => {
-                  if (e && e.shiftKey) toggleNodeSelection(node.id);
-                  else selectNodeOnly(node.id);
-                },
+                // Selection is handled in onMouseDown to avoid double-fire with click
+                onSelect: () => {},
                 onStartConnect: (e) => {
                   e.stopPropagation();
                   const rect = canvasRef.current.getBoundingClientRect();
