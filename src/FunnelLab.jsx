@@ -5,7 +5,7 @@ import {
   Phone, PhoneCall, Send, Package, Plus, Trash2, Lock, Unlock,
   Play, Pause, Copy, Save, ChevronRight, X, Settings2, Zap,
   TrendingUp, DollarSign, Target, Activity, GitBranch, Layers,
-  BarChart3, Share2, LogOut, Link2, Check
+  BarChart3, Share2, LogOut, Link2, Check, Cloud, CloudOff, AlertCircle
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import {
@@ -16,6 +16,7 @@ import {
   publishScenario as publishScenarioDb,
   unpublishScenario as unpublishScenarioDb,
 } from "./scenarios.js";
+import { useAutoSave, readDraft, clearDraft } from "./useAutoSave.js";
 
 /* =========================================================================
    FUNNEL LAB — a canvas for sketching, computing and comparing funnels
@@ -478,8 +479,16 @@ export default function FunnelLab() {
   const [zoom, setZoom] = useState(1);
   const [viewMode, setViewMode] = useState("lab"); // "lab" | "whiteboard"
   const [expandedNodeId, setExpandedNodeId] = useState(null);
+  const [draftPrompt, setDraftPrompt] = useState(null); // { draft } — offered restore banner
 
   const canvasRef = useRef(null);
+
+  // ---- Auto-save ----------------------------------------------------------
+  const autoSave = useAutoSave({
+    nodes, edges, textBlocks,
+    activeScenarioId,
+    enabled: true,
+  });
 
   // ---- Persistence (Supabase) ---------------------------------------------
   useEffect(() => {
@@ -487,6 +496,23 @@ export default function FunnelLab() {
       try {
         const loaded = await listScenariosDb();
         setScenarios(loaded);
+
+        // Check for a saved draft in localStorage
+        const draft = readDraft();
+        if (draft && draft.savedAt) {
+          // Is the draft newer than any corresponding saved scenario?
+          const corresponding = draft.activeScenarioId
+            ? loaded.find(s => s.id === draft.activeScenarioId)
+            : null;
+          const draftIsNewer = corresponding
+            ? draft.savedAt > corresponding.updatedAt + 1000 // 1s grace
+            : true; // no scenario → always offer to restore an unnamed draft
+          if (draftIsNewer && hasMeaningfulContent(draft)) {
+            setDraftPrompt({ draft, corresponding });
+          } else {
+            clearDraft();
+          }
+        }
       } catch (e) {
         console.error('Failed to load scenarios:', e);
       }
@@ -501,6 +527,7 @@ export default function FunnelLab() {
       });
       setScenarios(prev => [scenario, ...prev]);
       setActiveScenarioId(scenario.id);
+      clearDraft(); // saved properly — no need for draft buffer
     } catch (e) {
       console.error('Save failed:', e);
       alert('Could not save scenario. ' + e.message);
@@ -572,6 +599,24 @@ export default function FunnelLab() {
     } catch (e) {
       console.error('Rename failed:', e);
     }
+  };
+
+  // ---- Draft restore ------------------------------------------------------
+  const restoreDraft = () => {
+    if (!draftPrompt?.draft) return;
+    const d = draftPrompt.draft;
+    setNodes(d.nodes || []);
+    setEdges(d.edges || []);
+    setTextBlocks(d.textBlocks || []);
+    setActiveScenarioId(d.activeScenarioId || null);
+    setSelectedId(null);
+    setSelectedTextId(null);
+    setDraftPrompt(null);
+  };
+
+  const dismissDraft = () => {
+    clearDraft();
+    setDraftPrompt(null);
   };
 
   // ---- Computed ------------------------------------------------------------
@@ -914,20 +959,24 @@ export default function FunnelLab() {
             {animating ? <Pause size={12}/> : <Play size={12}/>}
             {animating ? "Pause flow" : "Play flow"}
           </button>
-          <button
-            onClick={() => {
-              const nm = prompt("Name this scenario:");
-              if (nm) saveScenario(nm);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border transition"
-            style={{
-              borderColor: "rgba(255,90,0,0.35)",
-              background: "rgba(255,90,0,0.08)",
-              color: "var(--brand-bright)",
-            }}
-          >
-            <Save size={12}/> Save scenario
-          </button>
+          {activeScenarioId ? (
+            <SaveStatusPill status={autoSave.status} lastSavedAt={autoSave.lastSavedAt}/>
+          ) : (
+            <button
+              onClick={() => {
+                const nm = prompt("Name this scenario:");
+                if (nm) saveScenario(nm);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border transition"
+              style={{
+                borderColor: "rgba(255,90,0,0.35)",
+                background: "rgba(255,90,0,0.08)",
+                color: "var(--brand-bright)",
+              }}
+            >
+              <Save size={12}/> Save scenario
+            </button>
+          )}
           <div className="h-6 w-px mx-1" style={{ background: "var(--border-2)" }}/>
           <div className="flex items-center gap-3 font-mono-data text-xs">
             <SummaryChip label="SPEND" value={fmt.money(summary.totalSpend)} tone="neutral"/>
@@ -1075,6 +1124,46 @@ export default function FunnelLab() {
             : {}
           }
         >
+          {/* Draft restore banner */}
+          {draftPrompt && (
+            <div
+              className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 px-4 py-2.5 rounded-md border z-50"
+              style={{
+                background: "rgba(8,7,10,0.95)",
+                borderColor: "rgba(255,90,0,0.4)",
+                boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+                backdropFilter: "blur(8px)",
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <AlertCircle size={14} style={{ color: "var(--brand-bright)" }}/>
+              <div className="text-[12px] text-zinc-200">
+                Unsaved work from your last session.
+                {draftPrompt.corresponding && (
+                  <span className="text-zinc-500"> — {draftPrompt.corresponding.name}</span>
+                )}
+              </div>
+              <button
+                onClick={restoreDraft}
+                className="text-[11px] uppercase tracking-wider px-2.5 py-1 rounded transition"
+                style={{
+                  color: "#000",
+                  background: "var(--brand)",
+                  fontWeight: 600,
+                }}
+              >
+                Restore
+              </button>
+              <button
+                onClick={dismissDraft}
+                className="text-[11px] uppercase tracking-wider px-2 py-1 rounded transition text-zinc-500 hover:text-zinc-300"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+
           {/* Watermark */}
           <div className="absolute top-6 right-8 pointer-events-none select-none">
             {viewMode === "lab" ? (
@@ -1280,6 +1369,68 @@ function isEditableEl(el) {
   if (!el) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+}
+
+// Treat a draft as "meaningful" if it has more than what the starter scenario
+// would have — basically, any user changes worth offering to restore.
+function hasMeaningfulContent(draft) {
+  if (!draft) return false;
+  const { nodes = [], edges = [], textBlocks = [] } = draft;
+  // Any user text content is meaningful
+  if (textBlocks.length > 2) return true;
+  // More than starter's 6 nodes? Changed a node count?
+  if (nodes.length !== 6) return true;
+  if (edges.length !== 5) return true;
+  return false;
+}
+
+// ------------- Save status pill ---------------------------------------------
+
+function SaveStatusPill({ status, lastSavedAt }) {
+  let Icon = Cloud;
+  let label = "Saved";
+  let color = "#71717a"; // idle neutral
+  let bg = "rgba(113,113,122,0.08)";
+  let border = "rgba(113,113,122,0.25)";
+
+  if (status === 'saving') {
+    label = "Saving…";
+    color = "#fbbf24";
+    bg = "rgba(251,191,36,0.08)";
+    border = "rgba(251,191,36,0.3)";
+  } else if (status === 'saved') {
+    Icon = Check;
+    label = "Saved";
+    color = "#34d399";
+    bg = "rgba(52,211,153,0.08)";
+    border = "rgba(52,211,153,0.3)";
+  } else if (status === 'error') {
+    Icon = AlertCircle;
+    label = "Save failed";
+    color = "#f87171";
+    bg = "rgba(248,113,113,0.08)";
+    border = "rgba(248,113,113,0.3)";
+  } else if (status === 'offline') {
+    Icon = CloudOff;
+    label = "Offline";
+    color = "#fbbf24";
+    bg = "rgba(251,191,36,0.08)";
+    border = "rgba(251,191,36,0.3)";
+  } else {
+    // idle — show last save time subtly
+    label = lastSavedAt ? "Saved" : "Ready";
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded-md border font-mono-data uppercase tracking-wider"
+      style={{ color, background: bg, borderColor: border }}
+      title={lastSavedAt ? `Last saved ${new Date(lastSavedAt).toLocaleTimeString()}` : undefined}
+    >
+      <Icon size={11}/>
+      <span>{label}</span>
+    </div>
+  );
 }
 
 function SummaryChip({ label, value, tone }) {
