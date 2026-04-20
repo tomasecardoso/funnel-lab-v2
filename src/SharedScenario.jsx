@@ -23,6 +23,7 @@ export default function SharedScenario() {
   const [panning, setPanning] = useState(null);
   const [zoom, setZoom] = useState(1);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [expandedNodeId, setExpandedNodeId] = useState(null);
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -41,6 +42,14 @@ export default function SharedScenario() {
     })();
   }, [slug]);
 
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') setExpandedNodeId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const { metrics, summary } = useMemo(() => {
     if (!scenario) return { metrics: {}, summary: {} };
     return computeFunnel(scenario.nodes, scenario.edges);
@@ -48,6 +57,7 @@ export default function SharedScenario() {
 
   const onCanvasMouseDown = (e) => {
     if (e.target === canvasRef.current || e.target.dataset?.bg === '1') {
+      setExpandedNodeId(null);
       setPanning({ startX: e.clientX, startY: e.clientY, origX: panOffset.x, origY: panOffset.y });
     }
   };
@@ -268,6 +278,10 @@ export default function SharedScenario() {
             const commonProps = {
               node, cat, typeDef, m,
               selected: false,
+              expanded: expandedNodeId === node.id,
+              onToggleExpand: () => setExpandedNodeId(prev => prev === node.id ? null : node.id),
+              onUpdateAssets: () => {}, // no-op for clients
+              readonlyAssets: true,
               onMouseDown: (e) => e.stopPropagation(),
               onSelect: () => {},
               onStartConnect: () => {},

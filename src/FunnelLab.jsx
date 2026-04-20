@@ -477,6 +477,7 @@ export default function FunnelLab() {
   const [panning, setPanning] = useState(null);
   const [zoom, setZoom] = useState(1);
   const [viewMode, setViewMode] = useState("lab"); // "lab" | "whiteboard"
+  const [expandedNodeId, setExpandedNodeId] = useState(null);
 
   const canvasRef = useRef(null);
 
@@ -671,6 +672,7 @@ export default function FunnelLab() {
     if (e.target === canvasRef.current || e.target.dataset?.bg === "1") {
       setSelectedId(null);
       setSelectedTextId(null);
+      setExpandedNodeId(null);
       // Plain left-click on background = pan. No modifier needed.
       if (e.button === 0 || e.button === 1 || e.button === 2) {
         setPanning({ startX: e.clientX, startY: e.clientY, origX: panOffset.x, origY: panOffset.y });
@@ -731,7 +733,7 @@ export default function FunnelLab() {
     }
   };
 
-  // Keyboard delete + view toggle
+  // Keyboard delete + view toggle + escape
   useEffect(() => {
     const onKey = (e) => {
       if (isEditableEl(document.activeElement)) return;
@@ -740,6 +742,8 @@ export default function FunnelLab() {
         else if (selectedTextId) removeTextBlock(selectedTextId);
       } else if (e.key === "v" || e.key === "V") {
         setViewMode(m => m === "lab" ? "whiteboard" : "lab");
+      } else if (e.key === "Escape") {
+        setExpandedNodeId(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1134,6 +1138,10 @@ export default function FunnelLab() {
               const commonProps = {
                 key: node.id,
                 node, cat, typeDef, m, selected,
+                expanded: expandedNodeId === node.id,
+                onToggleExpand: () => setExpandedNodeId(prev => prev === node.id ? null : node.id),
+                onUpdateAssets: (assets) => updateNodeData(node.id, "assets", assets),
+                readonlyAssets: viewMode === "whiteboard", // Whiteboard = read-only inline
                 onMouseDown: (e) => {
                   e.stopPropagation();
                   const rect = canvasRef.current.getBoundingClientRect();
@@ -1301,7 +1309,7 @@ function nodeRotation(id) {
   return ((h % 24) - 12) / 10;
 }
 
-export function WhiteboardNode({ node, cat, typeDef, m, selected, onMouseDown, onSelect, onStartConnect, onRemove, onRename }) {
+export function WhiteboardNode({ node, cat, typeDef, m, selected, expanded, onToggleExpand, onUpdateAssets, readonlyAssets, onMouseDown, onSelect, onStartConnect, onRemove, onRename }) {
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.data.campaignCode || "");
   const inputRef = useRef(null);
@@ -1328,9 +1336,10 @@ export function WhiteboardNode({ node, cat, typeDef, m, selected, onMouseDown, o
       onMouseDown={renaming ? undefined : onMouseDown}
       onClick={onSelect}
       onDoubleClick={(e) => {
-        if (!renaming) {
+        if (renaming) return;
+        if (onToggleExpand) {
           e.stopPropagation();
-          setRenaming(true);
+          onToggleExpand();
         }
       }}
       className="absolute cursor-grab active:cursor-grabbing group"
@@ -1401,7 +1410,15 @@ export function WhiteboardNode({ node, cat, typeDef, m, selected, onMouseDown, o
 
         {/* Label stack */}
         <div className="flex-1 min-w-0">
-          <div className="text-[9px] font-semibold uppercase tracking-[0.16em]" style={{ color: cat.color }}>
+          <div
+            className="text-[9px] font-semibold uppercase tracking-[0.16em] cursor-text"
+            style={{ color: cat.color }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (!readonlyAssets) setRenaming(true);
+            }}
+            title="Double-click to edit campaign code"
+          >
             {cat.label}
           </div>
           <div
@@ -1710,7 +1727,7 @@ export function NodePictogram({ node }) {
 
 // ------------- Lab node card (analytical view) ------------------------------
 
-export function NodeCard({ node, cat, typeDef, m, selected, onMouseDown, onSelect, onStartConnect, onRemove, onRename }) {
+export function NodeCard({ node, cat, typeDef, m, selected, expanded, onToggleExpand, onUpdateAssets, readonlyAssets, onMouseDown, onSelect, onStartConnect, onRemove, onRename }) {
   const Icon = typeDef.icon;
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState(node.data.campaignCode || "");
@@ -1815,7 +1832,15 @@ export function NodeCard({ node, cat, typeDef, m, selected, onMouseDown, onSelec
         </button>
       </div>
       {/* Body */}
-      <div className="px-3 py-2 relative">
+      <div
+        className="px-3 py-2 relative"
+        onDoubleClick={(e) => {
+          if (onToggleExpand) {
+            e.stopPropagation();
+            onToggleExpand();
+          }
+        }}
+      >
         <div className="font-mono-data text-[10px] text-zinc-500 uppercase tracking-wider">{headline.label}</div>
         <div className="font-mono-data text-base text-white tabular-nums mt-0.5 leading-tight">{headline.value}</div>
         {headline.sub && (
@@ -1824,6 +1849,17 @@ export function NodeCard({ node, cat, typeDef, m, selected, onMouseDown, onSelec
         {/* Asset dots (bottom-right) */}
         <AssetDots node={node} />
       </div>
+
+      {/* Inline asset expansion */}
+      {expanded && (
+        <ExpandedAssets
+          node={node}
+          readonly={!!readonlyAssets}
+          variant="lab"
+          onUpdateAssets={onUpdateAssets || (() => {})}
+        />
+      )}
+
       {/* Ports — positioned at exact vertical center of fixed-height card */}
       <div
         data-port-in="1"
@@ -2090,7 +2126,7 @@ export function WhiteboardAssetPill({ node }) {
   if (summary.length === 0) return null;
   return (
     <div
-      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full"
+      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full pointer-events-none"
       style={{
         bottom: -14,
         background: "#18181b",
@@ -2114,6 +2150,199 @@ export function WhiteboardAssetPill({ node }) {
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ------------- Expanded inline assets panel (shown on double-click) --------
+
+/**
+ * Renders below a node card (Lab or Whiteboard variant), attached visually.
+ * readonly = true → display only (whiteboard owner + client-share view)
+ * readonly = false → inline-edit (lab owner view)
+ * variant: "lab" | "whiteboard" — controls styling
+ */
+export function ExpandedAssets({ node, readonly, variant, onUpdateAssets, width }) {
+  const assets = node.data.assets || [];
+
+  const updateAsset = (id, patch) => {
+    onUpdateAssets(assets.map(a => a.id === id ? { ...a, ...patch } : a));
+  };
+  const removeAsset = (id) => {
+    onUpdateAssets(assets.filter(a => a.id !== id));
+  };
+  const addAsset = () => {
+    const id = "a_" + Math.random().toString(36).slice(2, 7);
+    onUpdateAssets([...assets, { id, kind: "video", name: "", description: "" }]);
+  };
+
+  const isWB = variant === "whiteboard";
+
+  // Clean presentation styling for whiteboard/client mode
+  if (isWB || readonly) {
+    return (
+      <div
+        className="absolute left-0"
+        style={{
+          top: NODE_H + 22, // leaves space for the whiteboard asset pill
+          width: width || NODE_W,
+          background: isWB ? "#ffffff" : "#0d0c10",
+          border: isWB ? "1px solid #e4e4e7" : "1px solid var(--border-1)",
+          borderRadius: 8,
+          padding: "12px 14px",
+          boxShadow: isWB
+            ? "0 4px 14px rgba(0,0,0,0.28)"
+            : "0 4px 14px rgba(0,0,0,0.5)",
+          zIndex: 5,
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div
+          className="text-[10px] uppercase tracking-[0.18em] mb-2"
+          style={{ color: isWB ? "#71717a" : "#a1a1aa" }}
+        >
+          Creative scope {assets.length > 0 && `· ${assets.length}`}
+        </div>
+        {assets.length === 0 && (
+          <div
+            className="text-[11px] italic"
+            style={{ color: isWB ? "#a1a1aa" : "#52525b" }}
+          >
+            No assets defined for this step.
+          </div>
+        )}
+        <div className="space-y-2">
+          {assets.map((a) => {
+            const t = ASSET_TYPES[a.kind] || ASSET_TYPES.other;
+            return (
+              <div key={a.id} className="flex gap-2">
+                <div
+                  className="shrink-0 font-mono-data text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm h-fit"
+                  style={{
+                    background: t.color + "20",
+                    color: t.color,
+                    border: `1px solid ${t.color}40`,
+                  }}
+                >
+                  {t.label}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div
+                    className="text-[12px] font-medium leading-tight"
+                    style={{
+                      color: isWB ? "#18181b" : "#fafafa",
+                      fontFamily: isWB ? "'Space Grotesk', sans-serif" : undefined,
+                    }}
+                  >
+                    {a.name || <span style={{ color: isWB ? "#a1a1aa" : "#52525b" }}>(untitled)</span>}
+                  </div>
+                  {a.description && (
+                    <div
+                      className="text-[11px] leading-snug mt-0.5"
+                      style={{ color: isWB ? "#52525b" : "#a1a1aa" }}
+                    >
+                      {a.description}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Lab view (editable)
+  return (
+    <div
+      className="absolute left-0"
+      style={{
+        top: NODE_H + 4,
+        width: width || NODE_W,
+        background: "linear-gradient(180deg, #131116 0%, #0a090d 100%)",
+        border: "1px solid var(--border-2)",
+        borderRadius: 8,
+        padding: 10,
+        boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+        zIndex: 5,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Package size={11} style={{ color: "var(--brand-bright)" }}/>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-400">
+            Assets {assets.length > 0 && <span className="text-zinc-600">· {assets.length}</span>}
+          </div>
+        </div>
+        <button
+          onClick={addAsset}
+          className="flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded transition"
+          style={{ color: "var(--brand-bright)", background: "rgba(255,90,0,0.1)", border: "1px solid rgba(255,90,0,0.25)" }}
+        >
+          <Plus size={10}/> Add
+        </button>
+      </div>
+      {assets.length === 0 && (
+        <div className="text-[11px] text-zinc-600 italic py-2">
+          No creatives yet. Click Add.
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {assets.map((a) => {
+          const t = ASSET_TYPES[a.kind] || ASSET_TYPES.other;
+          return (
+            <div
+              key={a.id}
+              className="rounded p-1.5 group/row"
+              style={{ background: "rgba(0,0,0,0.35)", border: "1px solid var(--border-1)" }}
+            >
+              <div className="flex items-start gap-1.5">
+                <select
+                  value={a.kind}
+                  onChange={(e) => updateAsset(a.id, { kind: e.target.value })}
+                  className="bg-black border rounded px-1 py-0.5 text-[9px] font-mono-data uppercase tracking-wider focus:outline-none"
+                  style={{
+                    borderColor: t.color + "55",
+                    color: t.color,
+                    fontWeight: 600,
+                  }}
+                >
+                  {Object.entries(ASSET_TYPES).map(([k, v]) => (
+                    <option key={k} value={k} style={{ background: "#000", color: "#fff" }}>{v.label}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={a.name}
+                  onChange={(e) => updateAsset(a.id, { name: e.target.value })}
+                  placeholder="Name"
+                  className="flex-1 min-w-0 bg-black border rounded px-1.5 py-0.5 text-[11px] text-zinc-100 focus:outline-none focus:border-[color:var(--brand)] placeholder:text-zinc-700"
+                  style={{ borderColor: "var(--border-2)" }}
+                />
+                <button
+                  onClick={() => removeAsset(a.id)}
+                  className="p-0.5 text-zinc-700 hover:text-red-400 transition opacity-0 group-hover/row:opacity-100"
+                  title="Remove"
+                >
+                  <X size={10}/>
+                </button>
+              </div>
+              <input
+                type="text"
+                value={a.description}
+                onChange={(e) => updateAsset(a.id, { description: e.target.value })}
+                placeholder="Short description"
+                className="mt-1 w-full bg-black border rounded px-1.5 py-0.5 text-[10px] text-zinc-300 focus:outline-none focus:border-[color:var(--brand)] placeholder:text-zinc-700"
+                style={{ borderColor: "var(--border-2)" }}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
