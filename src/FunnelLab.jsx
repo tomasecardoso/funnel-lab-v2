@@ -5,7 +5,8 @@ import {
   Phone, PhoneCall, Send, Package, Plus, Trash2, Lock, Unlock,
   Play, Pause, Copy, Save, ChevronRight, X, Settings2, Zap,
   TrendingUp, DollarSign, Target, Activity, GitBranch, Layers,
-  BarChart3, Share2, LogOut, Link2, Check, Cloud, CloudOff, AlertCircle
+  BarChart3, Share2, LogOut, Link2, Check, Cloud, CloudOff, AlertCircle,
+  Calendar, GitMerge
 } from "lucide-react";
 import { supabase } from "./supabase.js";
 import {
@@ -60,6 +61,7 @@ export const NODE_CATEGORIES = {
       optin:         { label: "Opt-in Page",    icon: MousePointerClick },
       landing:       { label: "Landing Page",   icon: FileText },
       vsl:           { label: "VSL Page",       icon: Film },
+      live_event:    { label: "Live Event",     icon: Calendar },
       thankyou:      { label: "Thank You",      icon: CheckCircle2 },
       confirm:       { label: "Confirmation",   icon: CheckCircle2 },
     },
@@ -91,6 +93,14 @@ export const NODE_CATEGORIES = {
       upsell:        { label: "Upsell",         icon: Package },
     },
   },
+  flow: {
+    label: "Flow",
+    color: "#06b6d4",
+    accent: "#22d3ee",
+    types: {
+      checkpoint:    { label: "Checkpoint",     icon: GitMerge },
+    },
+  },
 };
 
 // Default driver fields per node type. Values are "drivers" by default.
@@ -113,9 +123,10 @@ function defaultNodeData(category, type) {
     };
   }
   if (category === "conversion") {
-    if (type === "optin")    return { ...base, conversionRate: 35 };
-    if (type === "vsl")      return { ...base, conversionRate: 4 };
-    if (type === "landing")  return { ...base, conversionRate: 8 };
+    if (type === "optin")      return { ...base, conversionRate: 35 };
+    if (type === "vsl")        return { ...base, conversionRate: 4 };
+    if (type === "landing")    return { ...base, conversionRate: 8 };
+    if (type === "live_event") return { ...base, showUpRate: 60, conversionRate: 30 };
     return { ...base, conversionRate: 95 }; // thankyou / confirm
   }
   if (category === "nurture") {
@@ -139,6 +150,10 @@ function defaultNodeData(category, type) {
       useBundle: false,           // when true, `price` is the bundle price; when false, price = sum(products) or fallback `price` field
       products: [],               // [{ id, name, price }]
     };
+  }
+  if (category === "flow") {
+    // Checkpoint: pass-through aggregator. No drivers — volumeOut = sum of inputs.
+    return { ...base };
   }
   return base;
 }
@@ -212,12 +227,28 @@ export function computeFunnel(nodes, edges) {
       }
       m.volumeOut = clicks;
     } else if (node.category === "conversion") {
-      m.conversionRate = d.conversionRate;
-      m.conversions = m.volumeIn * (d.conversionRate / 100);
-      m.volumeOut = m.conversions;
-      // Cost per result = upstream spend / conversions
-      const upstreamSpend = sumUpstreamSpend(id, incoming, metrics);
-      m.costPerResult = m.conversions > 0 ? upstreamSpend / m.conversions : 0;
+      if (node.type === "live_event") {
+        // Live event: registrations → attendees (show-up) → conversions
+        m.showUpRate = d.showUpRate;
+        m.conversionRate = d.conversionRate;
+        m.attendees = m.volumeIn * (d.showUpRate / 100);
+        m.conversions = m.attendees * (d.conversionRate / 100);
+        m.volumeOut = m.conversions;
+        const upstreamSpend = sumUpstreamSpend(id, incoming, metrics);
+        m.costPerResult = m.conversions > 0 ? upstreamSpend / m.conversions : 0;
+      } else {
+        m.conversionRate = d.conversionRate;
+        m.conversions = m.volumeIn * (d.conversionRate / 100);
+        m.volumeOut = m.conversions;
+        // Cost per result = upstream spend / conversions
+        const upstreamSpend = sumUpstreamSpend(id, incoming, metrics);
+        m.costPerResult = m.conversions > 0 ? upstreamSpend / m.conversions : 0;
+      }
+    } else if (node.category === "flow") {
+      // Checkpoint: pure pass-through aggregator. volumeIn already sums
+      // multiple incoming edges in the topological propagation.
+      m.volumeOut = m.volumeIn;
+      m.total = m.volumeIn;
     } else if (node.category === "nurture") {
       if (d.showUpRate !== undefined) {
         m.showUpRate = d.showUpRate;
@@ -335,11 +366,28 @@ function fieldDefs(node) {
     ];
   }
   if (category === "conversion") {
+    if (type === "live_event") {
+      return [
+        { key: "showUpRate", label: "Show-up Rate", kind: "pct", driver: true },
+        { key: "conversionRate", label: "Conversion Rate", kind: "pct", driver: true },
+        { key: "volumeIn", label: "Registered", kind: "int", driver: false },
+        { key: "attendees", label: "Attendees", kind: "int", driver: false },
+        { key: "conversions", label: "Conversions", kind: "int", driver: false },
+        { key: "costPerResult", label: "Cost / Result", kind: "money2", driver: false },
+      ];
+    }
     return [
       { key: "conversionRate", label: "Conversion Rate", kind: "pct", driver: true },
       { key: "volumeIn", label: "Visitors", kind: "int", driver: false },
       { key: "conversions", label: "Conversions", kind: "int", driver: false },
       { key: "costPerResult", label: "Cost / Result", kind: "money2", driver: false },
+    ];
+  }
+  if (category === "flow") {
+    // Checkpoint — pure aggregator, all values computed from upstream
+    return [
+      { key: "volumeIn", label: "Inbound", kind: "int", driver: false },
+      { key: "total", label: "Total", kind: "int", driver: false },
     ];
   }
   if (category === "nurture") {
@@ -1652,6 +1700,42 @@ export function NodePictogram({ node }) {
     );
   }
 
+  // Live Event — calendar page with spotlight/stage
+  if (category === "conversion" && type === "live_event") {
+    return (
+      <svg viewBox="0 0 72 72" width="72" height="72">
+        {/* Calendar frame */}
+        <rect x="10" y="14" width="52" height="48" rx="3" fill="#fff" stroke={stroke} strokeWidth={sw}/>
+        {/* Calendar top band */}
+        <rect x="10" y="14" width="52" height="12" rx="3" fill="#fde68a" stroke={stroke} strokeWidth={sw}/>
+        {/* Binding dots */}
+        <rect x="20" y="10" width="3" height="10" rx="1" fill={stroke}/>
+        <rect x="49" y="10" width="3" height="10" rx="1" fill={stroke}/>
+        {/* Stage / spotlight */}
+        <path d="M 24 52 L 36 34 L 48 52 Z" fill="#ff5a00" stroke={stroke} strokeWidth={sw} strokeLinejoin="round"/>
+        {/* Star above (event sparkle) */}
+        <circle cx="36" cy="32" r="2" fill={stroke}/>
+      </svg>
+    );
+  }
+
+  // Checkpoint — confluence of three streams merging into one
+  if (category === "flow" && type === "checkpoint") {
+    return (
+      <svg viewBox="0 0 72 72" width="72" height="72">
+        {/* Three incoming lines merging at center */}
+        <path d="M 8 18 C 22 18, 26 34, 36 34" fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+        <path d="M 8 34 L 36 34" fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+        <path d="M 8 50 C 22 50, 26 34, 36 34" fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+        {/* Out arrow */}
+        <path d="M 36 34 L 60 34" fill="none" stroke={stroke} strokeWidth={sw * 1.3} strokeLinecap="round"/>
+        <path d="M 55 29 L 60 34 L 55 39" fill="none" stroke={stroke} strokeWidth={sw * 1.3} strokeLinecap="round" strokeLinejoin="round"/>
+        {/* Merge node */}
+        <circle cx="36" cy="34" r="5" fill="#22d3ee" stroke={stroke} strokeWidth={sw}/>
+      </svg>
+    );
+  }
+
   // Thank you / Confirmation — page with checkmark
   if (category === "conversion") {
     return (
@@ -2042,6 +2126,7 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
   const editorRef = useRef(null);
   const [toolbar, setToolbar] = useState(null); // { x, y, kind } relative to block
   const [activeFormats, setActiveFormats] = useState({ b: false, i: false, u: false });
+  const [editing, setEditing] = useState(false);
 
   // Sync HTML in on mount, when content changes externally, or when kind changes (remount)
   useEffect(() => {
@@ -2050,6 +2135,38 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
       editorRef.current.innerHTML = block.html;
     }
   }, [block.html, block.kind]);
+
+  // When entering edit mode, focus the editor and place caret at end
+  useEffect(() => {
+    if (editing && editorRef.current) {
+      editorRef.current.focus();
+      // Place caret at end
+      const range = document.createRange();
+      range.selectNodeContents(editorRef.current);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }, [editing]);
+
+  // Exit edit mode on ESC
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        setEditing(false);
+        editorRef.current?.blur();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing]);
+
+  // Deselection exits edit mode
+  useEffect(() => {
+    if (!selected) setEditing(false);
+  }, [selected]);
 
   const pushHtml = () => {
     if (!editorRef.current) return;
@@ -2068,6 +2185,7 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
   };
 
   const handleSelectionChange = () => {
+    if (!editing) { setToolbar(null); return; }
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
       setToolbar(null);
@@ -2091,13 +2209,12 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
     const onSel = () => handleSelectionChange();
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
-  }, []);
+  }, [editing]);
 
   const exec = (cmd) => {
     document.execCommand(cmd, false, null);
     pushHtml();
     updateActiveFormats();
-    // Keep selection visible
     handleSelectionChange();
   };
 
@@ -2117,14 +2234,22 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
 
   return (
     <div
-      onMouseDown={onMouseDown}
+      onMouseDown={editing ? (e) => e.stopPropagation() : onMouseDown}
       onClick={onSelect}
-      className={`absolute group rounded-md transition text-block-wrap text-block-inline ${selected ? "selected-block" : ""}`}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+      }}
+      className={`absolute group rounded-md transition text-block-wrap text-block-inline ${selected ? "selected-block" : ""} ${editing ? "" : "cursor-grab active:cursor-grabbing"}`}
       style={{
         left: block.x, top: block.y, width: block.w,
         padding: "8px 10px",
-        border: selected ? "1px solid rgba(255,90,0,0.5)" : "1px solid transparent",
-        background: selected ? "rgba(255,90,0,0.04)" : "transparent",
+        border: editing
+          ? "1px solid rgba(255,90,0,0.7)"
+          : (selected ? "1px solid rgba(255,90,0,0.5)" : "1px solid transparent"),
+        background: editing
+          ? "rgba(255,90,0,0.07)"
+          : (selected ? "rgba(255,90,0,0.04)" : "transparent"),
       }}
     >
       {/* Kind switcher + remove — only when selected */}
@@ -2156,6 +2281,15 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
           ))}
           <div className="w-px h-4 self-center" style={{ background: "var(--border-2)" }}/>
           <button
+            onClick={() => setEditing(e => !e)}
+            className={`px-2 py-1 uppercase tracking-wider transition ${editing ? "text-[color:var(--brand)]" : "text-zinc-500 hover:text-zinc-300"}`}
+            title={editing ? "Exit edit (Esc)" : "Edit text (double-click)"}
+            style={editing ? { background: "rgba(255,90,0,0.1)" } : {}}
+          >
+            {editing ? "Done" : "Edit"}
+          </button>
+          <div className="w-px h-4 self-center" style={{ background: "var(--border-2)" }}/>
+          <button
             onClick={onRemove}
             className="px-2 py-1 text-zinc-500 hover:text-red-400 transition"
             title="Delete"
@@ -2165,8 +2299,17 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
         </div>
       )}
 
+      {/* Hint shown when selected but not editing */}
+      {selected && !editing && (
+        <div
+          className="absolute -bottom-6 left-0 text-[9px] uppercase tracking-[0.14em] text-zinc-600 pointer-events-none"
+        >
+          Double-click to edit
+        </div>
+      )}
+
       {/* Floating inline format toolbar (appears on text selection) */}
-      {selected && toolbar && (
+      {selected && editing && toolbar && (
         <div
           className="absolute flex items-center gap-0.5 rounded border text-[11px] z-20 pointer-events-auto"
           style={{
@@ -2200,17 +2343,28 @@ export function TextBlockEl({ block, selected, onMouseDown, onSelect, onChange, 
         <span
           key={block.kind}
           ref={editorRef}
-          contentEditable
+          contentEditable={editing}
           suppressContentEditableWarning
           onInput={pushHtml}
-          onBlur={() => { pushHtml(); setTimeout(() => setToolbar(null), 100); }}
+          onBlur={() => {
+            pushHtml();
+            setTimeout(() => setToolbar(null), 100);
+          }}
           onKeyDown={onKeyDown}
           onMouseDown={(e) => {
-            // Allow text selection / caret placement without triggering drag
-            e.stopPropagation();
+            // When editing, let clicks through to place caret.
+            // When not editing, swallow the click so it's handled by the wrapper
+            // (which either selects or starts drag via onMouseDown prop).
+            if (editing) e.stopPropagation();
           }}
-          onClick={(e) => e.stopPropagation()}
-          style={{ display: "inline-block", minWidth: "20px", width: "100%" }}
+          onClick={(e) => { if (editing) e.stopPropagation(); }}
+          style={{
+            display: "inline-block",
+            minWidth: "20px",
+            width: "100%",
+            cursor: editing ? "text" : "inherit",
+            userSelect: editing ? "text" : "none",
+          }}
         />
       </Tag>
     </div>
@@ -2503,7 +2657,13 @@ export function getNodeHeadline(node, m) {
     return { label: "Clicks", value: fmt.int(m.clicks), sub: `${fmt.int(m.impressions)} impressions` };
   }
   if (node.category === "conversion") {
+    if (node.type === "live_event") {
+      return { label: "Conversions", value: fmt.int(m.conversions), sub: `${fmt.int(m.attendees)} attended · ${fmt.int(m.volumeIn)} registered` };
+    }
     return { label: "Conversions", value: fmt.int(m.conversions), sub: `${fmt.pct(m.conversionRate)} rate · ${fmt.int(m.volumeIn)} in` };
+  }
+  if (node.category === "flow") {
+    return { label: "Total", value: fmt.int(m.total || m.volumeIn), sub: "aggregated" };
   }
   if (node.category === "nurture") {
     if (m.closes !== undefined) {
