@@ -542,13 +542,13 @@ export default function FunnelLab() {
   const selectNodeOnly = (id) => { setSelectedIds(new Set([id])); setSelectedTextIds(new Set()); };
   const selectTextOnly = (id) => { setSelectedTextIds(new Set([id])); setSelectedIds(new Set()); };
   const clearSelection = () => { setSelectedIds(new Set()); setSelectedTextIds(new Set()); };
+  // Shift-click toggles — does NOT clear other type, allowing mixed selection
   const toggleNodeSelection = (id) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
-    setSelectedTextIds(new Set());
   };
   const toggleTextSelection = (id) => {
     setSelectedTextIds(prev => {
@@ -556,7 +556,6 @@ export default function FunnelLab() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
-    setSelectedIds(new Set());
   };
 
   // ---- Auto-save ----------------------------------------------------------
