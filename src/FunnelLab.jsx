@@ -534,6 +534,75 @@ export default function FunnelLab() {
   const canvasRef = useRef(null);
   const clipboardRef = useRef(null); // { nodes, edges, textBlocks }
 
+  // ---- Undo/Redo history --------------------------------------------------
+  const pastRef = useRef([]);
+  const futureRef = useRef([]);
+  const HISTORY_MAX = 100;
+
+  // Snapshot the current canvas state. Called BEFORE any mutation.
+  const pushHistory = () => {
+    pastRef.current.push({
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      edges: JSON.parse(JSON.stringify(edges)),
+      textBlocks: JSON.parse(JSON.stringify(textBlocks)),
+      selectedIds: new Set(selectedIds),
+      selectedTextIds: new Set(selectedTextIds),
+    });
+    // Cap history size
+    if (pastRef.current.length > HISTORY_MAX) pastRef.current.shift();
+    // Any new action invalidates the redo stack
+    futureRef.current = [];
+  };
+
+  const applySnapshot = (snap) => {
+    setNodes(snap.nodes);
+    setEdges(snap.edges);
+    setTextBlocks(snap.textBlocks);
+    setSelectedIds(new Set(snap.selectedIds));
+    setSelectedTextIds(new Set(snap.selectedTextIds));
+  };
+
+  // Coalesced history — used for rapid edits (typing into fields).
+  // Only pushes a new snapshot if 800ms has passed since last push for
+  // this key. Prevents every keystroke creating a history entry.
+  const lastCoalescedRef = useRef({ key: null, t: 0 });
+  const pushHistoryCoalesced = (key) => {
+    const now = Date.now();
+    if (lastCoalescedRef.current.key === key && (now - lastCoalescedRef.current.t) < 800) {
+      lastCoalescedRef.current.t = now;
+      return;
+    }
+    lastCoalescedRef.current = { key, t: now };
+    pushHistory();
+  };
+
+  const undo = () => {
+    if (pastRef.current.length === 0) return;
+    const snap = pastRef.current.pop();
+    // Save current for redo
+    futureRef.current.push({
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      edges: JSON.parse(JSON.stringify(edges)),
+      textBlocks: JSON.parse(JSON.stringify(textBlocks)),
+      selectedIds: new Set(selectedIds),
+      selectedTextIds: new Set(selectedTextIds),
+    });
+    applySnapshot(snap);
+  };
+
+  const redo = () => {
+    if (futureRef.current.length === 0) return;
+    const snap = futureRef.current.pop();
+    pastRef.current.push({
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      edges: JSON.parse(JSON.stringify(edges)),
+      textBlocks: JSON.parse(JSON.stringify(textBlocks)),
+      selectedIds: new Set(selectedIds),
+      selectedTextIds: new Set(selectedTextIds),
+    });
+    applySnapshot(snap);
+  };
+
   // Derived single-selection (maintains backward compat with right-panel editor)
   const selectedId = selectedIds.size === 1 ? [...selectedIds][0] : null;
   const selectedTextId = selectedTextIds.size === 1 ? [...selectedTextIds][0] : null;
@@ -627,6 +696,8 @@ export default function FunnelLab() {
     setTextBlocks(sc.textBlocks || []);
     setActiveScenarioId(id);
     clearSelection();
+    pastRef.current = [];
+    futureRef.current = [];
   };
 
   const deleteScenarioFn = async (id) => {
@@ -684,6 +755,8 @@ export default function FunnelLab() {
     setTextBlocks(d.textBlocks || []);
     setActiveScenarioId(d.activeScenarioId || null);
     clearSelection();
+    pastRef.current = [];
+    futureRef.current = [];
     setDraftPrompt(null);
   };
 
@@ -711,6 +784,7 @@ export default function FunnelLab() {
     const rect = canvasRef.current?.getBoundingClientRect();
     const x = pos ? pos.x : (rect ? (rect.width / 2 - panOffset.x - 110) / zoom : 200);
     const y = pos ? pos.y : (rect ? (rect.height / 2 - panOffset.y - 60) / zoom : 200);
+    pushHistory();
     setNodes(prev => [...prev, {
       id, category, type, x, y,
       data: defaultNodeData(category, type),
@@ -719,18 +793,21 @@ export default function FunnelLab() {
   };
 
   const removeNode = (id) => {
+    pushHistory();
     setNodes(prev => prev.filter(n => n.id !== id));
     setEdges(prev => prev.filter(e => e.from !== id && e.to !== id));
     setSelectedIds(prev => { const n = new Set(prev); n.delete(id); return n; });
   };
 
   const updateNodeData = (id, key, value) => {
+    pushHistoryCoalesced(`node:${id}:${key}`);
     setNodes(prev => prev.map(n =>
       n.id === id ? { ...n, data: { ...n.data, [key]: value } } : n
     ));
   };
 
   const toggleOverride = (id, key) => {
+    pushHistory();
     setNodes(prev => prev.map(n => {
       if (n.id !== id) return n;
       const ov = { ...n.overrides };
@@ -752,10 +829,12 @@ export default function FunnelLab() {
       edges.filter(e => e.from === cur).forEach(e => stack.push(e.to));
     }
     if (reachable.has(fromId)) return;
+    pushHistory();
     setEdges(prev => [...prev, { id: "e_" + Math.random().toString(36).slice(2,8), from: fromId, to: toId }]);
   };
 
   const removeEdge = (id) => {
+    pushHistory();
     setEdges(prev => prev.filter(e => e.id !== id));
   };
 
@@ -771,16 +850,25 @@ export default function FunnelLab() {
       h3: "Section label",
       p:  "Write your note here. Select text to format it.",
     }[kind] || "Text";
+    pushHistory();
     setTextBlocks(prev => [...prev, { id, kind, x, y, w: 360, html: defaultHtml, align: "left" }]);
     selectTextOnly(id);
     setAutoEditBlockId(id);
   };
 
   const updateTextBlock = (id, patch) => {
+    // Content edits coalesce (typing). Other patches (align/kind) are discrete.
+    const isContentEdit = patch.html !== undefined;
+    if (isContentEdit) {
+      pushHistoryCoalesced(`text:${id}:html`);
+    } else {
+      pushHistory();
+    }
     setTextBlocks(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
   };
 
   const removeTextBlock = (id) => {
+    pushHistory();
     setTextBlocks(prev => prev.filter(b => b.id !== id));
     setSelectedTextIds(prev => { const n = new Set(prev); n.delete(id); return n; });
   };
@@ -805,6 +893,7 @@ export default function FunnelLab() {
   const cutSelection = () => {
     const had = copySelection();
     if (!had) return;
+    pushHistory();
     // Remove selected nodes (+ their edges) and text blocks
     const idsToRemove = new Set(selectedIds);
     setNodes(prev => prev.filter(n => !idsToRemove.has(n.id)));
@@ -819,6 +908,7 @@ export default function FunnelLab() {
   const pasteClipboard = (targetPos) => {
     const clip = clipboardRef.current;
     if (!clip || (clip.nodes.length === 0 && clip.textBlocks.length === 0)) return;
+    pushHistory();
     const target = targetPos || mousePos;
 
     // Compute the anchor (top-left of the bounding box of copied items)
@@ -912,6 +1002,11 @@ export default function FunnelLab() {
       const newY = y - draggingNode.offsetY;
       const dx = newX - primaryNode.x;
       const dy = newY - primaryNode.y;
+      // Snapshot once on first actual move
+      if (draggingNode.pendingSnapshot && (dx !== 0 || dy !== 0)) {
+        pushHistory();
+        setDraggingNode(d => d ? { ...d, pendingSnapshot: false } : d);
+      }
       if (selectedIds.size > 1 && selectedIds.has(draggingNode.id)) {
         // Group drag
         setNodes(prev => prev.map(n =>
@@ -930,6 +1025,10 @@ export default function FunnelLab() {
       const newY = y - draggingText.offsetY;
       const dx = newX - primaryText.x;
       const dy = newY - primaryText.y;
+      if (draggingText.pendingSnapshot && (dx !== 0 || dy !== 0)) {
+        pushHistory();
+        setDraggingText(d => d ? { ...d, pendingSnapshot: false } : d);
+      }
       if (selectedTextIds.size > 1 && selectedTextIds.has(draggingText.id)) {
         setTextBlocks(prev => prev.map(b =>
           selectedTextIds.has(b.id) ? { ...b, x: b.x + dx, y: b.y + dy } : b
@@ -999,8 +1098,22 @@ export default function FunnelLab() {
       if (isEditableEl(document.activeElement)) return;
       const mod = e.metaKey || e.ctrlKey;
 
+      // Undo / Redo
+      if (mod && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if (mod && (e.shiftKey && (e.key === "z" || e.key === "Z") || e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
       // Delete
       if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedIds.size === 0 && selectedTextIds.size === 0) return;
+        pushHistory();
         // Delete all selected nodes + text blocks
         if (selectedIds.size > 0) {
           const idsToRemove = new Set(selectedIds);
@@ -1497,7 +1610,7 @@ export default function FunnelLab() {
                   const rect = canvasRef.current.getBoundingClientRect();
                   const x = (e.clientX - rect.left - panOffset.x) / zoom;
                   const y = (e.clientY - rect.top - panOffset.y) / zoom;
-                  setDraggingText({ id: block.id, offsetX: x - block.x, offsetY: y - block.y });
+                  setDraggingText({ id: block.id, offsetX: x - block.x, offsetY: y - block.y, pendingSnapshot: true });
                   if (e.shiftKey) toggleTextSelection(block.id);
                   else if (!selectedTextIds.has(block.id)) selectTextOnly(block.id);
                 }}
@@ -1525,7 +1638,8 @@ export default function FunnelLab() {
                   const rect = canvasRef.current.getBoundingClientRect();
                   const x = (e.clientX - rect.left - panOffset.x) / zoom;
                   const y = (e.clientY - rect.top - panOffset.y) / zoom;
-                  setDraggingNode({ id: node.id, offsetX: x - node.x, offsetY: y - node.y });
+                  // Mark drag as "pending history snapshot" — will snapshot on first actual move
+                  setDraggingNode({ id: node.id, offsetX: x - node.x, offsetY: y - node.y, pendingSnapshot: true });
                   // Selection logic:
                   //  - shift+click: toggle in/out
                   //  - if already selected: keep full selection (group drag)
